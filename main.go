@@ -1,3 +1,4 @@
+//go:build !windows || sdl2
 // +build !windows sdl2
 
 package main
@@ -6,14 +7,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/gonutz/blob"
-	"github.com/gonutz/payload"
-	"github.com/veandco/go-sdl2/sdl"
-	"github.com/veandco/go-sdl2/sdl_image"
-	"github.com/veandco/go-sdl2/sdl_mixer"
 	"runtime"
 	"time"
-	"unsafe"
+
+	"github.com/gonutz/blob"
+	"github.com/gonutz/payload"
+	"github.com/veandco/go-sdl2/img"
+	"github.com/veandco/go-sdl2/mix"
+	"github.com/veandco/go-sdl2/sdl"
 )
 
 func init() {
@@ -31,8 +32,8 @@ func main() {
 	check(mix.OpenAudio(44100, mix.DEFAULT_FORMAT, 1, 512))
 	defer mix.CloseAudio()
 
-	if img.Init(img.INIT_PNG)&img.INIT_PNG == 0 {
-		panic("error init png")
+	if err := img.Init(img.INIT_PNG); err != nil {
+		panic(fmt.Errorf("error initializing SDL_image: %v", err))
 	}
 	defer img.Quit()
 
@@ -50,7 +51,8 @@ func main() {
 	window.SetFullscreen(sdl.WINDOW_FULLSCREEN_DESKTOP)
 	fullscreen := true
 
-	camera := newWindowCamera(window.GetSize())
+	w, h := window.GetSize()
+	camera := newWindowCamera(int(w), int(h))
 
 	assetLoader := newSDLAssetLoader(camera, renderer)
 	defer assetLoader.close()
@@ -79,8 +81,10 @@ func main() {
 
 	musicData, found := assetLoader.resources.GetByID("music")
 	if found {
-		musicRWOps := sdl.RWFromMem(unsafe.Pointer(&musicData[0]), len(musicData))
-		music, err := mix.LoadMUS_RW(musicRWOps, 0)
+		musicRWOps, err := sdl.RWFromMem(musicData)
+		check(err)
+
+		music, err := mix.LoadMUSRW(musicRWOps, 1)
 		if err != nil {
 			fmt.Println("error loading music:", err)
 		} else {
@@ -95,37 +99,41 @@ func main() {
 	for game.Running() {
 		for e := sdl.PollEvent(); e != nil; e = sdl.PollEvent() {
 			switch event := e.(type) {
-			case *sdl.KeyDownEvent:
-				if event.Repeat == 0 {
+			case *sdl.KeyboardEvent:
+				if event.Type == sdl.KEYDOWN {
+					if event.Repeat == 0 {
+						switch event.Keysym.Sym {
+						case sdl.K_LEFT:
+							game.HandleInput(InputEvent{GoLeft, true, charIndex})
+						case sdl.K_RIGHT:
+							game.HandleInput(InputEvent{GoRight, true, charIndex})
+						case sdl.K_UP, sdl.K_SPACE, sdl.K_LCTRL:
+							game.HandleInput(InputEvent{Jump, true, charIndex})
+						case sdl.K_ESCAPE:
+							game.HandleInput(InputEvent{QuitGame, true, charIndex})
+						}
+					}
+				}
+				if event.Type == sdl.KEYUP {
 					switch event.Keysym.Sym {
 					case sdl.K_LEFT:
-						game.HandleInput(InputEvent{GoLeft, true, charIndex})
+						game.HandleInput(InputEvent{GoLeft, false, charIndex})
 					case sdl.K_RIGHT:
-						game.HandleInput(InputEvent{GoRight, true, charIndex})
+						game.HandleInput(InputEvent{GoRight, false, charIndex})
 					case sdl.K_UP, sdl.K_SPACE, sdl.K_LCTRL:
-						game.HandleInput(InputEvent{Jump, true, charIndex})
+						game.HandleInput(InputEvent{Jump, false, charIndex})
+					case sdl.K_F11:
+						if fullscreen {
+							window.SetFullscreen(0)
+						} else {
+							window.SetFullscreen(sdl.WINDOW_FULLSCREEN_DESKTOP)
+						}
+						fullscreen = !fullscreen
 					case sdl.K_ESCAPE:
-						game.HandleInput(InputEvent{QuitGame, true, charIndex})
+						game.HandleInput(InputEvent{QuitGame, false, charIndex})
 					}
 				}
-			case *sdl.KeyUpEvent:
-				switch event.Keysym.Sym {
-				case sdl.K_LEFT:
-					game.HandleInput(InputEvent{GoLeft, false, charIndex})
-				case sdl.K_RIGHT:
-					game.HandleInput(InputEvent{GoRight, false, charIndex})
-				case sdl.K_UP, sdl.K_SPACE, sdl.K_LCTRL:
-					game.HandleInput(InputEvent{Jump, false, charIndex})
-				case sdl.K_F11:
-					if fullscreen {
-						window.SetFullscreen(0)
-					} else {
-						window.SetFullscreen(sdl.WINDOW_FULLSCREEN_DESKTOP)
-					}
-					fullscreen = !fullscreen
-				case sdl.K_ESCAPE:
-					game.HandleInput(InputEvent{QuitGame, false, charIndex})
-				}
+
 			case *sdl.WindowEvent:
 				if event.Event == sdl.WINDOWEVENT_SIZE_CHANGED {
 					width, height := int(event.Data1), int(event.Data2)
@@ -209,8 +217,8 @@ func (l *sdlAssetLoader) loadResources() error {
 	if !found {
 		panic("texture atlas not found in resources")
 	}
-	rwOps := sdl.RWFromMem(unsafe.Pointer(&atlas[0]), len(atlas))
-	surface, err := img.Load_RW(rwOps, false)
+	rwOps, err := sdl.RWFromMem(atlas)
+	surface, err := img.LoadRW(rwOps, false)
 	check(err)
 	defer surface.Free()
 	texture, err := l.renderer.CreateTextureFromSurface(surface)
@@ -265,8 +273,9 @@ func (l *sdlAssetLoader) LoadSound(id string) Sound {
 		panic("unknown sound resource: " + id)
 	}
 
-	rwOps := sdl.RWFromMem(unsafe.Pointer(&data[0]), len(data))
-	chunk, err := mix.LoadWAV_RW(rwOps, false)
+	rwOps, err := sdl.RWFromMem(data)
+	check(err)
+	chunk, err := mix.LoadWAVRW(rwOps, false)
 	check(err)
 	sound := &wavSound{chunk}
 	l.sounds[id] = sound
