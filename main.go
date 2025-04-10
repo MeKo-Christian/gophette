@@ -218,6 +218,7 @@ func (l *sdlAssetLoader) loadResources() error {
 		panic("texture atlas not found in resources")
 	}
 	rwOps, err := sdl.RWFromMem(atlas)
+	check(err)
 	surface, err := img.LoadRW(rwOps, false)
 	check(err)
 	defer surface.Free()

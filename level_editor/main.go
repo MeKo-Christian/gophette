@@ -3,10 +3,8 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"runtime"
-	"unsafe"
 
 	"github.com/gonutz/blob"
 	"github.com/veandco/go-sdl2/img"
@@ -41,6 +39,11 @@ func main() {
 
 	check(sdl.Init(sdl.INIT_EVERYTHING))
 	defer sdl.Quit()
+
+	if err := img.Init(img.INIT_PNG); err != nil {
+		panic(fmt.Errorf("error initializing SDL_image: %v", err))
+	}
+	defer img.Quit()
 
 	window, r, err := sdl.CreateWindowAndRenderer(
 		640, 480,
@@ -178,81 +181,84 @@ func main() {
 					last.W += dx
 					last.H += dy
 				}
-			case *sdl.KeyDownEvent:
-				switch event.Keysym.Sym {
-				case sdl.K_ESCAPE:
-					running = false
-				case sdl.K_LEFT:
-					cameraX += 100
-				case sdl.K_RIGHT:
-					cameraX -= 100
-				case sdl.K_UP:
-					cameraY += 100
-				case sdl.K_DOWN:
-					cameraY -= 100
-				case sdl.K_a:
-					moveImage(-1, 0)
-				case sdl.K_d:
-					moveImage(1, 0)
-				case sdl.K_w:
-					moveImage(0, -1)
-				case sdl.K_s:
-					moveImage(0, 1)
-				case sdl.K_j:
-					stretchObject(-1, 0)
-				case sdl.K_l:
-					stretchObject(1, 0)
-				case sdl.K_i:
-					stretchObject(0, -1)
-				case sdl.K_k:
-					stretchObject(0, 1)
-				case sdl.K_MINUS:
-					if selectedImage != -1 && selectedImage != 0 {
-						images = append(append(
-							[]image{images[selectedImage]},
-							images[0:selectedImage]...),
-							images[selectedImage+1:]...,
-						)
-						selectedImage = 0
+
+			case *sdl.KeyboardEvent:
+				if event.Type == sdl.KEYDOWN {
+					switch event.Keysym.Sym {
+					case sdl.K_ESCAPE:
+						running = false
+					case sdl.K_LEFT:
+						cameraX += 100
+					case sdl.K_RIGHT:
+						cameraX -= 100
+					case sdl.K_UP:
+						cameraY += 100
+					case sdl.K_DOWN:
+						cameraY -= 100
+					case sdl.K_a:
+						moveImage(-1, 0)
+					case sdl.K_d:
+						moveImage(1, 0)
+					case sdl.K_w:
+						moveImage(0, -1)
+					case sdl.K_s:
+						moveImage(0, 1)
+					case sdl.K_j:
+						stretchObject(-1, 0)
+					case sdl.K_l:
+						stretchObject(1, 0)
+					case sdl.K_i:
+						stretchObject(0, -1)
+					case sdl.K_k:
+						stretchObject(0, 1)
+					case sdl.K_MINUS:
+						if selectedImage != -1 && selectedImage != 0 {
+							images = append(append(
+								[]image{images[selectedImage]},
+								images[0:selectedImage]...),
+								images[selectedImage+1:]...,
+							)
+							selectedImage = 0
+						}
+					case sdl.K_PLUS:
+						last := len(images) - 1
+						fmt.Println("last", last, len(images))
+						fmt.Println("selectedImage", selectedImage)
+						if selectedImage != -1 && selectedImage != last {
+							images = append(append(
+								images[0:selectedImage],
+								images[selectedImage+1:]...),
+								images[selectedImage],
+							)
+							selectedImage = last
+							fmt.Println("selectedImage after", selectedImage)
+						}
+					case sdl.K_SPACE:
+						if selectedObject != -1 {
+							obj := &LevelObjects[selectedObject]
+							obj.Solid = !obj.Solid
+						}
+					case sdl.K_c:
+						if selectedImage != -1 {
+							copy := images[selectedImage]
+							copy.x += 10
+							copy.y += 10
+							images = append(images, copy)
+						}
+					case sdl.K_DELETE:
+						if selectedImage != -1 {
+							images = append(images[:selectedImage], images[selectedImage+1:]...)
+							selectedImage = -1
+						} else if selectedObject != -1 {
+							LevelObjects = append(
+								LevelObjects[:selectedObject],
+								LevelObjects[selectedObject+1:]...,
+							)
+							selectedObject = -1
+						}
+					case sdl.K_F3:
+						saveLevel()
 					}
-				case sdl.K_PLUS:
-					last := len(images) - 1
-					fmt.Println("last", last, len(images))
-					fmt.Println("selectedImage", selectedImage)
-					if selectedImage != -1 && selectedImage != last {
-						images = append(append(
-							images[0:selectedImage],
-							images[selectedImage+1:]...),
-							images[selectedImage],
-						)
-						selectedImage = last
-						fmt.Println("selectedImage after", selectedImage)
-					}
-				case sdl.K_SPACE:
-					if selectedObject != -1 {
-						obj := &LevelObjects[selectedObject]
-						obj.Solid = !obj.Solid
-					}
-				case sdl.K_c:
-					if selectedImage != -1 {
-						copy := images[selectedImage]
-						copy.x += 10
-						copy.y += 10
-						images = append(images, copy)
-					}
-				case sdl.K_DELETE:
-					if selectedImage != -1 {
-						images = append(images[:selectedImage], images[selectedImage+1:]...)
-						selectedImage = -1
-					} else if selectedObject != -1 {
-						LevelObjects = append(
-							LevelObjects[:selectedObject],
-							LevelObjects[selectedObject+1:]...,
-						)
-						selectedObject = -1
-					}
-				case sdl.K_F3:
-					saveLevel()
 				}
 			}
 		}
@@ -316,9 +322,13 @@ func check(err error) {
 }
 
 func loadImage(id string) *sdl.Texture {
-	data, _ := resources.GetByID(id)
-	rwOps := sdl.RWFromMem(unsafe.Pointer(&data[0]), len(data))
-	surface, err := img.Load_RW(rwOps, false)
+	data, found := resources.GetByID(id)
+	if !found {
+		panic("image not found in resources: " + id)
+	}
+	rwOps, err := sdl.RWFromMem(data)
+	check(err)
+	surface, err := img.LoadRW(rwOps, false)
 	check(err)
 	defer surface.Free()
 	texture, err := renderer.CreateTextureFromSurface(surface)
@@ -339,7 +349,7 @@ var LevelImages = []LevelImage{
 ` + imagesToString() + `}
 `)
 
-	ioutil.WriteFile("./images.go", buffer.Bytes(), 0777)
+	os.WriteFile("./images.go", buffer.Bytes(), 0777)
 }
 
 func imagesToString() string {
@@ -366,7 +376,7 @@ var LevelObjects = []LevelObject{
 ` + objectsToString() + `}
 `)
 
-	ioutil.WriteFile("./objects.go", buffer.Bytes(), 0777)
+	os.WriteFile("./objects.go", buffer.Bytes(), 0777)
 }
 
 func objectsToString() string {
@@ -402,7 +412,7 @@ var level1 = Level{
 	[]LevelImage{` + imagesToString() + `},
 }
 `)
-	ioutil.WriteFile("../level1.go", buffer.Bytes(), 0777)
+	os.WriteFile("../level1.go", buffer.Bytes(), 0777)
 
 	saveImages()
 	saveObjects()
